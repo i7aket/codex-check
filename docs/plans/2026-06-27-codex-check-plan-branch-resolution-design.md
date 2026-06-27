@@ -127,6 +127,12 @@ Fix — make the auth check trustworthy instead of substring-sniffing:
 - `i7aket/commands/codex-check.md` — document `--branch`, the three modes, and the default
   (auto-by-plan-ticket). Update `argument-hint` to `"[path/to/plan.md] [--branch <name>]"`.
 - `README.md` — document the three modes under Usage; add the Updating section (below).
+  Also fix the install command after the repo rename: `marketplace add i7aket/tools`
+  (was `i7aket/codex-check`; GitHub redirects the old URL but docs should be current).
+- `i7aket/.claude-plugin/plugin.json` — update `homepage`/`repository` to
+  `https://github.com/i7aket/tools` (repo renamed `codex-check` → `tools`). The plugin
+  name stays `i7aket`; the command stays `/i7aket:codex-check`.
+- Any self-update URL (Part 2) must point at `i7aket/tools`, not the old name.
 
 ## Versioning & update delivery
 
