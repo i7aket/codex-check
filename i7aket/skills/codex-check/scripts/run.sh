@@ -433,6 +433,12 @@ NOTES: numbered list (if none, say so).
 BEST PRACTICES: with links.
 BETTER APPROACHES: if any.
 SUMMARY: 2-3 sentences.
+
+As the LAST line of your answer, with nothing after it, output verbatim exactly one of:
+GATE=READY
+GATE=REVISE
+GATE=REWORK
+(ASCII only, regardless of the language of the review above.)
 EOF
 
 # --- 7. Run Codex -----------------------------------------------------------
@@ -498,3 +504,19 @@ REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
 } > "$REVIEW_PATH"
 log "review written: $REVIEW_REL"
 printf '%s\n' "$REVIEW_PATH"   # LAST line = the absolute review path (the command parses this to read the file)
+
+# --- F8: opt-in severity gating (fail-closed) -------------------------------
+# Only active when CODEX_CHECK_GATE is set. Parse a stable ASCII token from the
+# report (NOT the free-text VERDICT, which may be non-English). Report path was
+# already printed above, preserving the "last stdout line = report path" contract.
+if [[ -n "${CODEX_CHECK_GATE:-}" ]]; then
+  # `|| true`: under `set -euo pipefail` a no-match grep (rc 1) would otherwise
+  # abort the script before the fail-closed `*)` case below could run.
+  _gate="$(grep -E '^GATE=(READY|REVISE|REWORK)$' "$REVIEW_PATH" 2>/dev/null | tail -n1 || true)"
+  case "$_gate" in
+    GATE=READY)  exit 0 ;;
+    GATE=REVISE) exit 2 ;;
+    GATE=REWORK) exit 3 ;;
+    *) log "gate: no GATE= token found in report — failing closed"; exit 2 ;;
+  esac
+fi
