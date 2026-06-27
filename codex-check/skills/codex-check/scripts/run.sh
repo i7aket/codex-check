@@ -38,21 +38,20 @@ if [[ -n "$PLAN_PATH" ]]; then
   [[ -f "$PLAN_PATH" ]] || die "given plan path does not exist: $PLAN_PATH"
 else
   # Default search locations; override with CODEX_CHECK_PLAN_DIRS (colon-separated).
-  IFS=':' read -r -a SEARCH_DIRS <<< "${CODEX_CHECK_PLAN_DIRS:-docs/plans:docs/specs:docs/superpowers/plans:docs/superpowers/specs:plans:specs}"
+  IFS=':' read -r -a SEARCH_DIRS <<< "${CODEX_CHECK_PLAN_DIRS:-docs/plans:docs/specs:plans:specs:docs}"
   for dir in "${SEARCH_DIRS[@]}"; do
     if [[ -d "$dir" ]]; then
-      cand="$(ls -t "$dir"/*.md 2>/dev/null | grep -v '\.codex-review\.md$' | head -n1 || true)"
+      # newest regular *.md file, excluding previously generated reviews
+      cand="$(find "$dir" -maxdepth 1 -type f -name '*.md' ! -name '*.codex-review.md' -print0 2>/dev/null \
+        | xargs -0 ls -t 2>/dev/null | head -n1 || true)"
       [[ -n "$cand" ]] && { PLAN_PATH="$cand"; break; }
     fi
   done
-  if [[ -z "$PLAN_PATH" ]]; then
-    cand="$(ls -t scratchpad*/* .features/plan 2>/dev/null | head -n1 || true)"
-    [[ -n "$cand" ]] && PLAN_PATH="$cand"
-  fi
-  [[ -n "$PLAN_PATH" ]] || die "no plan found (searched: ${SEARCH_DIRS[*]}, scratchpad*/, .features/plan) — pass a path explicitly"
+  [[ -n "$PLAN_PATH" ]] || die "no plan found (searched: ${SEARCH_DIRS[*]}) — pass a plan path explicitly: /codex-check:codex-check path/to/plan.md"
 fi
-PLAN_PATH="$(cd "$(dirname "$PLAN_PATH")" && pwd)/$(basename "$PLAN_PATH")"  # absolute
-log "plan: $PLAN_PATH"
+PLAN_PATH="$(cd "$(dirname "$PLAN_PATH")" && pwd)/$(basename "$PLAN_PATH")"  # absolute (for cp/read)
+PLAN_REL="${PLAN_PATH#"$REPO_ROOT"/}"   # repo-relative for logs/report — never leak absolute local paths
+log "plan: $PLAN_REL"
 
 # --- 2. Resolve the base branch (don't assume 'main') -----------------------
 BASE_REF=""
@@ -106,7 +105,20 @@ REVIEW_IN_WT="$WT/CODEX_REVIEW.md"
 log "worktree: $WT"
 
 # --- 6. Build the review prompt --------------------------------------------
-DIFF_BASE="${BASE_REF:-HEAD~1}"
+# Diff base: the resolved base ref; else the parent commit if one exists; else
+# none (initial-commit repo / no base) → review the plan "pre-implementation".
+if [[ -n "$BASE_REF" ]]; then
+  DIFF_BASE="$BASE_REF"
+elif git rev-parse --verify --quiet HEAD~1 >/dev/null 2>&1; then
+  DIFF_BASE="HEAD~1"
+else
+  DIFF_BASE=""
+fi
+if [[ -n "$DIFF_BASE" ]]; then
+  DIFF_LINE="3. What's already done: run \`git diff $DIFF_BASE...HEAD --stat\` (and inspect interesting hunks). Do NOT run \`git fetch\` (no write access to .git inside this worktree; the base ref was already refreshed outside). If there is no diff, treat the plan as \"pre-implementation\"."
+else
+  DIFF_LINE="3. What's already done: no base ref or parent commit is available, so there is no diff to inspect — treat the plan as \"pre-implementation\"."
+fi
 if [[ "$GH_OK" -eq 1 && -n "$SOURCE_BRANCH" ]]; then
   PR_LINE="2. PR: run \`gh pr list --state all --head \"$SOURCE_BRANCH\" --json number,title,url,state,mergedAt\` (NOT open-only, or merged/closed PRs are missed). If none, say 'PR: none' and continue."
 else
@@ -124,7 +136,7 @@ You are an independent reviewer of an implementation plan. The plan is at ./.cod
 Branch under review: ${SOURCE_BRANCH:-<detached>} (you are in a detached worktree at its HEAD — this is expected). Gather context yourself:
 $TICKET_LINE
 $PR_LINE
-3. What's already done: run \`git diff $DIFF_BASE...HEAD --stat\` (and inspect interesting hunks). Do NOT run \`git fetch\` (no write access to .git inside this worktree; the base ref was already refreshed outside). If there is no diff, treat the plan as "pre-implementation".
+$DIFF_LINE
 
 Then review the plan itself:
 - Verify it: is it implementable, does it agree with the ticket (if any) and the existing code. NB: the plan may legitimately be out of the ticket's scope if the plan is not itself a change to this branch (the branch may just be a test carrier) — that is not an error.
@@ -164,19 +176,29 @@ if [[ $CODEX_RC -ne 0 || ! -s "$REVIEW_IN_WT" ]]; then
 fi
 
 # --- 8. Copy the report next to the plan -----------------------------------
-REVIEW_PATH="${PLAN_PATH%.*}.codex-review.md"
+# Strip only a real markdown extension from the basename (so e.g. ".features/plan"
+# does NOT become "/repo/.codex-review.md" by treating ".features" as the extension).
+PLAN_DIR="$(dirname "$PLAN_PATH")"
+PLAN_BASE="$(basename "$PLAN_PATH")"
+case "$PLAN_BASE" in
+  *.md)       REVIEW_BASE="${PLAN_BASE%.md}.codex-review.md" ;;
+  *.markdown) REVIEW_BASE="${PLAN_BASE%.markdown}.codex-review.md" ;;
+  *)          REVIEW_BASE="${PLAN_BASE}.codex-review.md" ;;
+esac
+REVIEW_PATH="$PLAN_DIR/$REVIEW_BASE"
+REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
 {
-  echo "# Codex review — $(basename "$PLAN_PATH")"
+  echo "# Codex review — $PLAN_BASE"
   echo
   echo "- Branch: ${SOURCE_BRANCH:-<detached>}"
   echo "- Ticket: ${TICKET:-<none>}"
-  echo "- Diff base: ${DIFF_BASE}"
-  echo "- Plan: $PLAN_PATH"
+  echo "- Diff base: ${DIFF_BASE:-<none>}"
+  echo "- Plan: $PLAN_REL"
   echo "- Model: Codex (xhigh, web_search), sandbox=workspace-write"
   echo
   echo "---"
   echo
   cat "$REVIEW_IN_WT"
 } > "$REVIEW_PATH"
-log "review written: $REVIEW_PATH"
-printf '%s\n' "$REVIEW_PATH"   # LAST line = the review path (the command parses this)
+log "review written: $REVIEW_REL"
+printf '%s\n' "$REVIEW_PATH"   # LAST line = the absolute review path (the command parses this to read the file)

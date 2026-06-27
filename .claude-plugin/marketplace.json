@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace-manifest.json",
-  "name": "codex-check",
-  "description": "A Claude Code plugin that sends your implementation plan to the local Codex CLI for an independent review.",
+  "name": "i7aket-tools",
+  "description": "i7aket's Claude Code plugins.",
   "owner": {
     "name": "i7aket",
     "url": "https://github.com/i7aket"

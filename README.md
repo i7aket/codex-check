@@ -26,8 +26,9 @@ Nothing is project-specific — it works in any git repo.
 
 ## Requirements
 
+- A Unix-like shell with **Bash** and standard POSIX tools (`git`, `find`, `grep`, `mktemp`, `cp`, …).
+  On Windows use WSL or Git Bash.
 - [Codex CLI](https://developers.openai.com/codex) installed and authenticated (`codex login`).
-- `git`.
 - *(Optional)* `gh` authenticated — for PR context.
 - *(Optional)* an issue-tracker MCP (Jira / Linear / YouTrack / …) configured **for Codex** — for ticket context.
 
@@ -35,31 +36,37 @@ Nothing is project-specific — it works in any git repo.
 
 ```text
 /plugin marketplace add i7aket/codex-check
-/plugin install codex-check@codex-check
+/plugin install codex-check@i7aket-tools
 ```
+
+(The repository is the marketplace `i7aket-tools`; the plugin inside it is `codex-check`.)
 
 ## Usage
 
 ```text
-/codex-check                      # auto-detect the newest plan
-/codex-check path/to/plan.md      # review a specific plan
+/codex-check:codex-check                      # auto-detect the newest plan
+/codex-check:codex-check path/to/plan.md      # review a specific plan
 ```
+
+Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/codex-check:codex-check`.
 
 The review takes ~10–13 minutes (high reasoning + web search), so it runs in the background;
 you'll be notified when it's done. The verdict appears in chat and the full report is saved to
-`<plan>.codex-review.md`.
+`<plan>.codex-review.md` next to the plan.
 
 ### Where it looks for a plan
 
-In order: `docs/plans/`, `docs/specs/`, `docs/superpowers/plans/`, `docs/superpowers/specs/`,
-`plans/`, `specs/`, then `scratchpad*/` and `.features/plan`. Override with the
-`CODEX_CHECK_PLAN_DIRS` env var (colon-separated).
+In order: `docs/plans/`, `docs/specs/`, `plans/`, `specs/`, `docs/` — the newest `*.md` (generated
+`*.codex-review.md` files are ignored). Override the search list with the `CODEX_CHECK_PLAN_DIRS`
+env var (colon-separated), or just pass an explicit path.
 
 ## Notes
 
 - Web search in `codex exec` is enabled via the `web_search` config key (there is no `--search` flag).
 - Runs Codex in `workspace-write` (not full bypass): writes are confined to the temporary worktree.
-- The base ref is auto-detected — `main`, `master`, or whatever `origin/HEAD` points to.
+- The base ref is auto-detected — whatever `origin/HEAD` points to, else `main`/`master`, else the
+  parent commit, else none (the plan is reviewed "pre-implementation").
+- Generated reviews record the **repo-relative** plan path, not your absolute local path.
 
 ## License
 
