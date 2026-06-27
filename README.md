@@ -36,10 +36,10 @@ Nothing is project-specific — it works in any git repo.
 
 ```text
 /plugin marketplace add i7aket/codex-check
-/plugin install i7aket@i7aket-tools
+/plugin install i7aket@tools
 ```
 
-(The repository is the marketplace `i7aket-tools`; the plugin inside it is `i7aket`.)
+(The repository is the marketplace `tools`; the plugin inside it is `i7aket`.)
 
 ## Usage
 
