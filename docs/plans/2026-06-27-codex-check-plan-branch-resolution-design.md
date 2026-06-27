@@ -108,9 +108,12 @@ code that contains the string `401 Unauthorized`, or by an unrelated MCP server 
 401 to the shared stderr.
 
 Fix — make the auth check trustworthy instead of substring-sniffing:
-- **Gate on outcome, not on grepping output.** Only treat it as an auth failure when Codex
-  actually failed: `CODEX_RC -ne 0 && report is empty/missing`. A run that produced a
-  non-empty report is a success regardless of what strings appear in its logs.
+- **Gate on outcome, not on grepping output.** A non-zero Codex exit code is treated as a
+  failure even if a partial report was written (a truncated report from a crashed run is not
+  a valid review); an empty/missing report is also a failure. Crucially, the *reason* — auth
+  vs. anything else — is decided only after we know it failed, and never from substrings in a
+  successful run's logs. So a successful run that merely quotes `401 Unauthorized` is never
+  misread as an auth failure (that is the actual bug being fixed).
 - If (and only if) it failed, then narrow the auth heuristic to Codex CLI's real auth
   signature — match on stderr lines that are Codex's own error output (e.g. a leading
   `ERROR`/`error:` line containing `token`/`401`), not any occurrence anywhere in the

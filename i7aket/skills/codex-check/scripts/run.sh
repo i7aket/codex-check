@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # codex-check: send an implementation plan to the local Codex CLI for an
-# independent high-reasoning review against the current branch, its tracker
-# ticket (if an issue-tracker MCP is configured for Codex) and its PR.
+# independent high-reasoning review against the branch the PLAN targets, its
+# tracker ticket (if an issue-tracker MCP is configured for Codex) and its PR.
 #
 # Codex runs in an isolated, detached git worktree (sandbox: workspace-write).
 # The report is captured via `codex exec -o`. The worktree is always removed
@@ -41,15 +41,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a gi
 cd "$REPO_ROOT"
 
 # --- 0a. Argument parsing: optional PLAN_PATH and optional --branch ----------
-PLAN_PATH=""
+PLAN_PATH=""; PLAN_SET=0
 REQ_BRANCH="${CODEX_CHECK_BRANCH:-}"   # env default; --branch overrides
+set_plan() { [[ "$PLAN_SET" -eq 0 ]] && { PLAN_PATH="$1"; PLAN_SET=1; } || die "unexpected extra argument: $1"; }
+END_OPTS=0
 while [[ $# -gt 0 ]]; do
+  if [[ "$END_OPTS" -eq 1 ]]; then set_plan "$1"; shift; continue; fi
   case "$1" in
     --branch)   shift; [[ $# -gt 0 ]] || die "--branch requires a value"; REQ_BRANCH="$1" ;;
     --branch=*) REQ_BRANCH="${1#--branch=}" ;;
-    --)         shift; [[ $# -gt 0 ]] && PLAN_PATH="$1" ;;   # explicit end-of-options
+    --)         END_OPTS=1 ;;                                 # everything after is positional
     -*)         die "unknown option: $1" ;;
-    *)          [[ -z "$PLAN_PATH" ]] && PLAN_PATH="$1" || die "unexpected extra argument: $1" ;;
+    *)          set_plan "$1" ;;
   esac
   shift
 done
@@ -81,12 +84,6 @@ version_check() {
   done
 }
 version_check || true
-
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  GH_OK=1
-else
-  GH_OK=0; log "note: gh missing or not authenticated — PR context will be skipped"
-fi
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   GH_OK=1
@@ -127,16 +124,16 @@ fi
 BASE_BRANCH="${BASE_REF#origin/}"   # bare name for fetch (may be empty)
 log "base ref: ${BASE_REF:-<none>}"
 
-# --- 2a. Freshen the base ref + remote-tracking refs BEFORE picking a target ---
+# --- 2a. Freshen ALL remote-tracking refs BEFORE picking a target ----------
 # (workspace-write can't write .git inside a linked worktree, so fetch out here.)
+# A plain `git fetch origin <branch>` only updates that one ref — it would NOT
+# discover a remote-only ticket branch (origin/fix/ABC-123) during Mode B
+# enumeration. Fetch the whole remote so origin/* is current, which also
+# freshens the base ref.
 if git remote get-url origin >/dev/null 2>&1; then
-  if [[ -n "$BASE_BRANCH" ]]; then
-    git fetch origin "$BASE_BRANCH" --prune >/dev/null 2>&1 \
-      && log "fetched origin/$BASE_BRANCH" \
-      || log "note: git fetch origin $BASE_BRANCH failed — diff base may be stale"
-  else
-    git fetch origin --prune >/dev/null 2>&1 || true
-  fi
+  git fetch origin --prune >/dev/null 2>&1 \
+    && log "fetched origin/* (prune)" \
+    || log "note: git fetch origin --prune failed — refs may be stale"
 fi
 
 # --- 3. Current branch (for the mismatch guard) and the plan's own ticket ----
@@ -175,15 +172,32 @@ if [[ -n "$REQ_BRANCH" ]]; then
 elif [[ -n "$PLAN_TICKET" ]]; then
   # Mode B — the unique branch carrying the plan's ticket key (exact equality).
   # bash 3.2-safe (macOS stock): no mapfile, no associative arrays.
+  # Enumerate origin/* FIRST so that when a local branch and its origin mirror
+  # share a name we keep the remote (PR-backed review should track origin), and
+  # warn if the two have diverged so a stale local checkout can't change the
+  # target silently.
   _uniq=() ; _seen_keys=" "
   while IFS= read -r r; do
     [[ -z "$r" ]] && continue
     [[ "$(ticket_of "$r")" == "$PLAN_TICKET" ]] || continue
-    key="${r#origin/}"                                  # dedupe local vs its origin/ mirror
-    case "$_seen_keys" in *" $key "*) continue ;; esac
+    key="${r#origin/}"
+    case "$_seen_keys" in
+      *" $key "*)
+        # already kept the origin/ side; flag divergence if the local OID differs
+        if [[ "$r" != origin/* ]]; then
+          lo="$(resolve_oid "$r")"; ro="$(resolve_oid "origin/$key")"
+          [[ -n "$lo" && -n "$ro" && "$lo" != "$ro" ]] && \
+            log "note: local '$key' and 'origin/$key' differ — reviewing origin/$key (pass --branch '$key' to force local)"
+        fi
+        continue ;;
+    esac
     _seen_keys="$_seen_keys$key "
     _uniq+=("$r")
-  done < <(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin 2>/dev/null)
+    # NB: two separate for-each-ref passes (remote THEN heads) — a single call
+    # sorts by full refname and would not honor argument order, letting a local
+    # branch win over its origin mirror.
+  done < <({ git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null; \
+             git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null; })
   if   [[ "${#_uniq[@]}" -eq 1 ]]; then
     TARGET_REF="${_uniq[0]}"; TARGET_OID="$(resolve_oid "$TARGET_REF")"
     TARGET_DESC="branch for $PLAN_TICKET: $TARGET_REF"
