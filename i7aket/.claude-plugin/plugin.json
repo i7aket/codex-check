@@ -1,14 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "i7aket",
-  "version": "1.0.1",
-  "description": "Send your implementation plan to the local Codex CLI for an independent high-reasoning review against the current branch, its ticket and PR — in an isolated, auto-cleaned git worktree.",
+  "version": "1.1.0",
+  "description": "Send your implementation plan to the local Codex CLI for an independent high-reasoning review against the branch the plan targets, its ticket and PR — in an isolated, auto-cleaned git worktree.",
   "author": {
     "name": "i7aket",
     "url": "https://github.com/i7aket"
   },
-  "homepage": "https://github.com/i7aket/codex-check",
-  "repository": "https://github.com/i7aket/codex-check",
+  "homepage": "https://github.com/i7aket/tools",
+  "repository": "https://github.com/i7aket/tools",
   "license": "MIT",
   "keywords": ["codex", "code-review", "plan-review", "second-opinion", "git-worktree"]
 }

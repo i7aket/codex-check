@@ -35,17 +35,18 @@ Nothing is project-specific — it works in any git repo.
 ## Install
 
 ```text
-/plugin marketplace add i7aket/codex-check
+/plugin marketplace add i7aket/tools
 /plugin install i7aket@tools
 ```
 
-(The repository is the marketplace `tools`; the plugin inside it is `i7aket`.)
+(The repository `i7aket/tools` is the marketplace `tools`; the plugin inside it is `i7aket`.)
 
 ## Usage
 
 ```text
-/i7aket:codex-check                      # auto-detect the newest plan
-/i7aket:codex-check path/to/plan.md      # review a specific plan
+/i7aket:codex-check                          # auto-detect the newest plan
+/i7aket:codex-check path/to/plan.md          # review a specific plan
+/i7aket:codex-check path/to/plan.md --branch feat/ABC-123   # review against an explicit branch
 ```
 
 Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/i7aket:codex-check`.
@@ -53,6 +54,33 @@ Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/i7a
 The review takes ~10–13 minutes (high reasoning + web search), so it runs in the background;
 you'll be notified when it's done. The verdict appears in chat and the full report is saved to
 `<plan>.codex-review.md` next to the plan.
+
+### What it reviews against
+
+The **plan** is the source of truth — not whatever branch you happen to have checked out:
+
+1. `--branch <name>` (or `CODEX_CHECK_BRANCH`) — reviews against that exact branch.
+2. Otherwise the plan's own ticket: add a `Ticket: ABC-123` line near the top, and codex-check
+   finds the unique branch carrying that key and reviews against it. `Ticket: none` (or no ticket)
+   reviews the plan "pre-implementation" against the base ref. If two branches carry the key, it
+   stops and asks you to pass `--branch`.
+
+If the plan targets a different ticket than the branch you're on, it warns loudly and reviews the
+plan's branch anyway — so a stray checkout can't silently produce a wrong verdict.
+
+## Updating
+
+Claude Code does **not** auto-notify or auto-update plugins — a marketplace is a cached git repo,
+and nothing polls GitHub. To pull a new version, run **both**:
+
+```text
+/plugin marketplace update tools
+/plugin update i7aket@tools
+```
+
+Without `marketplace update` first, the local cache never learns a new version exists. codex-check
+also prints a one-line notice at the start of a run when a newer version is published (best-effort,
+silent if offline; opt out with `CODEX_CHECK_NO_UPDATE_CHECK=1`).
 
 ### Where it looks for a plan
 
