@@ -4,6 +4,26 @@ All notable changes to this plugin are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-06-27
+
+### Added
+- `--ref <rev>` is now exercised by tests; opt-in **severity gating** via a stable
+  `GATE=READY|REVISE|REWORK` token (`CODEX_CHECK_GATE`): exit 0/2/3, fail-closed
+  (missing token → 2). The report path is still the last stdout line.
+- A `PLAN STATUS` line (banner + report + prompt) disclosing whether the plan
+  file matches / differs from / is untracked at the reviewed commit.
+- A bats + shellcheck CI gate (GitHub Actions) pinning the fail-closed
+  target-resolution contract; shellcheck is blocking.
+
+### Changed / Fixed
+- Cancelled (`SIGTERM`/`SIGHUP`/`INT`) background runs now **abort** (exit
+  128+signal) and no longer leak a worktree — a naive shared `EXIT` trap would
+  have resumed and exited 0.
+- `git worktree add` failures now surface git's real error message.
+- Simplified the ahead/behind banner (one `read`, no `awk` subshells) and
+  deleted a dead `BASE_BRANCH` variable.
+- README gains an identity table + supported-paths-only update recovery note.
+
 ## [1.2.0] — 2026-06-27
 
 Hardening of the v1.1.0 target resolution after two independent audits (a
