@@ -36,19 +36,19 @@ Nothing is project-specific — it works in any git repo.
 
 ```text
 /plugin marketplace add i7aket/codex-check
-/plugin install codex-check@i7aket-tools
+/plugin install i7aket@i7aket-tools
 ```
 
-(The repository is the marketplace `i7aket-tools`; the plugin inside it is `codex-check`.)
+(The repository is the marketplace `i7aket-tools`; the plugin inside it is `i7aket`.)
 
 ## Usage
 
 ```text
-/codex-check:codex-check                      # auto-detect the newest plan
-/codex-check:codex-check path/to/plan.md      # review a specific plan
+/i7aket:codex-check                      # auto-detect the newest plan
+/i7aket:codex-check path/to/plan.md      # review a specific plan
 ```
 
-Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/codex-check:codex-check`.
+Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/i7aket:codex-check`.
 
 The review takes ~10–13 minutes (high reasoning + web search), so it runs in the background;
 you'll be notified when it's done. The verdict appears in chat and the full report is saved to

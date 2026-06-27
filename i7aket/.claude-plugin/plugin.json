@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "codex-check",
-  "version": "1.0.0",
+  "name": "i7aket",
+  "version": "1.0.1",
   "description": "Send your implementation plan to the local Codex CLI for an independent high-reasoning review against the current branch, its ticket and PR — in an isolated, auto-cleaned git worktree.",
   "author": {
     "name": "i7aket",

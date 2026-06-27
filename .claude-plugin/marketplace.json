@@ -8,10 +8,10 @@
   },
   "plugins": [
     {
-      "name": "codex-check",
-      "source": "./codex-check",
-      "description": "Independent Codex review of your implementation plan (branch + ticket + PR), in an isolated git worktree.",
-      "version": "1.0.0",
+      "name": "i7aket",
+      "source": "./i7aket",
+      "description": "Independent Codex review of your implementation plan (branch + ticket + PR), in an isolated git worktree. Command: /i7aket:codex-check",
+      "version": "1.0.1",
       "license": "MIT",
       "keywords": ["codex", "code-review", "plan-review"]
     }
