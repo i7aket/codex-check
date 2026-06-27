@@ -44,29 +44,36 @@ Nothing is project-specific — it works in any git repo.
 ## Usage
 
 ```text
-/i7aket:codex-check                          # auto-detect the newest plan
-/i7aket:codex-check path/to/plan.md          # review a specific plan
+/i7aket:codex-check path/to/plan.md --ref <sha-or-rev>      # review against any commit-ish (preferred)
 /i7aket:codex-check path/to/plan.md --branch feat/ABC-123   # review against an explicit branch
+/i7aket:codex-check path/to/plan.md --pre-implementation    # review against the base ref, on purpose
+/i7aket:codex-check path/to/plan.md                         # target from the plan's Ticket: line
 ```
 
 Plugin commands are namespaced as `/<plugin>:<command>`, so the command is `/i7aket:codex-check`.
 
 The review takes ~10–13 minutes (high reasoning + web search), so it runs in the background;
 you'll be notified when it's done. The verdict appears in chat and the full report is saved to
-`<plan>.codex-review.md` next to the plan.
+`<plan>.codex-review.md` next to the plan. Before the long run, a `REVIEWING …` banner prints the
+resolved target (ref, OID, ahead/behind vs base) so you can catch a wrong target in seconds.
 
 ### What it reviews against
 
-The **plan** is the source of truth — not whatever branch you happen to have checked out:
+The target is always **explicit or uniquely resolved** — never whatever branch your shell happens
+to be sitting in (it may be a stale or unrelated worktree). Priority:
 
-1. `--branch <name>` (or `CODEX_CHECK_BRANCH`) — reviews against that exact branch.
-2. Otherwise the plan's own ticket: add a `Ticket: ABC-123` line near the top, and codex-check
-   finds the unique branch carrying that key and reviews against it. `Ticket: none` (or no ticket)
-   reviews the plan "pre-implementation" against the base ref. If two branches carry the key, it
-   stops and asks you to pass `--branch`.
+1. `--ref <rev>` (or `CODEX_CHECK_REF`) — any commit-ish: a SHA, tag, branch, `origin/pr/*`, or
+   detached PR head. The safest choice in a many-worktree repo.
+2. `--branch <name>` (or `CODEX_CHECK_BRANCH`) — that exact branch.
+3. Otherwise the plan's own ticket: add a `Ticket: ABC-123` line near the top, and codex-check
+   finds the **unique** branch carrying that key and reviews against it.
+4. `--pre-implementation` (or `Ticket: none`) — reviews the plan against the base ref with no
+   target branch.
 
-If the plan targets a different ticket than the branch you're on, it warns loudly and reviews the
-plan's branch anyway — so a stray checkout can't silently produce a wrong verdict.
+It **fails closed** rather than guessing: no `Ticket:` line and no `--ref`/`--branch` → it aborts
+and asks for one; a ticket that maps to no branch → it aborts unless you pass `--pre-implementation`;
+two branches carry the key → it aborts and asks you to choose. So a stray checkout can't silently
+produce a wrong (or empty) verdict.
 
 ## Updating
 

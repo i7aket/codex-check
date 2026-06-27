@@ -7,19 +7,27 @@
 # The report is captured via `codex exec -o`. The worktree is always removed
 # (trap EXIT). Works in any git repo; nothing here is project-specific.
 #
-# Usage: run.sh [PLAN_PATH] [--branch <name>]
+# Usage: run.sh [PLAN_PATH] [--ref <rev> | --branch <name>] [--pre-implementation]
 #   PLAN_PATH optional. If omitted, the newest candidate is auto-detected from
 #   common plan/spec locations (see locate step). Override search dirs with
 #   CODEX_CHECK_PLAN_DIRS (colon-separated).
-#   --branch <name> (or env CODEX_CHECK_BRANCH) reviews against that exact branch,
-#   bypassing the plan-ticket auto-resolution.
+#   --ref <rev> (or env CODEX_CHECK_REF) reviews against any commit-ish — a SHA,
+#   tag, detached PR head, origin/pr/*, or branch — resolved to an OID. Highest
+#   priority; the safest choice in a many-worktree repo.
+#   --branch <name> (or env CODEX_CHECK_BRANCH) reviews against that exact branch.
+#   --pre-implementation explicitly reviews the plan against the base ref with no
+#   target branch (otherwise "no branch for the ticket" is a hard error, not a
+#   silent base review).
 #
 # What it reviews against (TARGET), highest priority first:
-#   A) --branch / CODEX_CHECK_BRANCH  -> that branch (validated, resolved to an OID)
-#   B) the plan's own ticket          -> the unique branch carrying that ticket key,
-#                                        else pre-implementation against the base ref
+#   A) --ref / CODEX_CHECK_REF        -> that commit-ish (resolved to an OID)
+#   B) --branch / CODEX_CHECK_BRANCH  -> that branch (validated, resolved to an OID)
+#   C) the plan's own ticket          -> the unique branch carrying that ticket key;
+#                                        if none, ABORT (unless --pre-implementation)
+#   D) --pre-implementation / Ticket: none -> the base ref, no target branch
 # The plan is the source of truth for the ticket (a `Ticket:` metadata line), NOT
-# whatever branch happens to be checked out. A loud warning fires on mismatch.
+# whatever branch happens to be checked out. Target identity must be explicit or
+# uniquely resolved — the script fails closed rather than guessing.
 #
 # Output: writes <plan>.codex-review.md next to the plan, and prints that path
 # as the LAST stdout line. Progress goes to stderr as "[codex-check] ...".
@@ -37,19 +45,29 @@ resolve_oid() { git rev-parse --verify --quiet --end-of-options "$1^{commit}" 2>
 # --- 0. Preflight -----------------------------------------------------------
 command -v codex >/dev/null 2>&1 || die "codex CLI not found in PATH (https://developers.openai.com/codex)"
 command -v git   >/dev/null 2>&1 || die "git not found in PATH"
+# Inherited Git env selectors override repo/worktree discovery (git docs), so a
+# stale GIT_DIR/GIT_WORK_TREE leaked from a parent process would silently point
+# git at the wrong repo regardless of CWD. Clear them before the first git call.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_NAMESPACE 2>/dev/null || true
+ORIG_PWD="$PWD"   # capture BEFORE the cd, so a relative plan path resolves where the caller meant it
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
 cd "$REPO_ROOT"
 
-# --- 0a. Argument parsing: optional PLAN_PATH and optional --branch ----------
+# --- 0a. Argument parsing: PLAN_PATH, target selector, pre-implementation ----
 PLAN_PATH=""; PLAN_SET=0
+REQ_REF="${CODEX_CHECK_REF:-}"         # env default; --ref overrides. Highest priority.
 REQ_BRANCH="${CODEX_CHECK_BRANCH:-}"   # env default; --branch overrides
+PRE_IMPL=0
 set_plan() { [[ "$PLAN_SET" -eq 0 ]] && { PLAN_PATH="$1"; PLAN_SET=1; } || die "unexpected extra argument: $1"; }
 END_OPTS=0
 while [[ $# -gt 0 ]]; do
   if [[ "$END_OPTS" -eq 1 ]]; then set_plan "$1"; shift; continue; fi
   case "$1" in
-    --branch)   shift; [[ $# -gt 0 ]] || die "--branch requires a value"; REQ_BRANCH="$1" ;;
-    --branch=*) REQ_BRANCH="${1#--branch=}" ;;
+    --ref)               shift; [[ $# -gt 0 ]] || die "--ref requires a value"; REQ_REF="$1" ;;
+    --ref=*)             REQ_REF="${1#--ref=}" ;;
+    --branch)            shift; [[ $# -gt 0 ]] || die "--branch requires a value"; REQ_BRANCH="$1" ;;
+    --branch=*)          REQ_BRANCH="${1#--branch=}" ;;
+    --pre-implementation) PRE_IMPL=1 ;;
     --)         END_OPTS=1 ;;                                 # everything after is positional
     -*)         die "unknown option: $1" ;;
     *)          set_plan "$1" ;;
@@ -93,6 +111,9 @@ fi
 
 # --- 1. Locate the plan -----------------------------------------------------
 if [[ -n "$PLAN_PATH" ]]; then
+  # A relative plan path was meant relative to the CALLER's CWD, not REPO_ROOT.
+  # Resolve it against ORIG_PWD (captured before the cd) before checking.
+  [[ "$PLAN_PATH" != /* && -f "$ORIG_PWD/$PLAN_PATH" ]] && PLAN_PATH="$ORIG_PWD/$PLAN_PATH"
   [[ -f "$PLAN_PATH" ]] || die "given plan path does not exist: $PLAN_PATH"
 else
   # Default search locations; override with CODEX_CHECK_PLAN_DIRS (colon-separated).
@@ -130,10 +151,15 @@ log "base ref: ${BASE_REF:-<none>}"
 # discover a remote-only ticket branch (origin/fix/ABC-123) during Mode B
 # enumeration. Fetch the whole remote so origin/* is current, which also
 # freshens the base ref.
+FETCH_OK=1; HAS_ORIGIN=0
 if git remote get-url origin >/dev/null 2>&1; then
-  git fetch origin --prune >/dev/null 2>&1 \
-    && log "fetched origin/* (prune)" \
-    || log "note: git fetch origin --prune failed — refs may be stale"
+  HAS_ORIGIN=1
+  if git fetch origin --prune >/dev/null 2>&1; then
+    log "fetched origin/* (prune)"
+  else
+    FETCH_OK=0
+    log "note: git fetch origin --prune failed — remote-tracking refs may be stale"
+  fi
 fi
 
 # --- 3. Current branch (for the mismatch guard) and the plan's own ticket ----
@@ -146,8 +172,12 @@ CURRENT_TICKET="$(ticket_of "$CURRENT_BRANCH")"
 # REGION — the head of the file, up to the first Markdown section heading (`## `)
 # or a YAML front-matter terminator. This stops a `Ticket:` inside body prose or a
 # fenced code block from hijacking the target (which would recreate the very
-# wrong-target bug we're fixing). Only if no metadata line exists do we fall back
-# to a logged free-text guess over the whole file.
+# wrong-target bug we're fixing).
+#
+# Body-wide ticket guessing is deliberately NOT used to choose the target: a stray
+# key in prose could mis-target a wrong (or empty) review that still looks valid.
+# If there is no metadata `Ticket:` line, the target must come from --ref/--branch
+# or --pre-implementation; otherwise the script fails closed below (Mode C).
 PLAN_TICKET=""; PLAN_TICKET_EXPLICIT=0
 META_REGION="$(awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}' "$PLAN_PATH" 2>/dev/null || true)"
 META_LINE="$(printf '%s\n' "$META_REGION" | grep -iE '^[[:space:]]*Ticket:[[:space:]]*' | head -n1 || true)"
@@ -159,15 +189,32 @@ if [[ -n "$META_LINE" ]]; then
   else
     PLAN_TICKET="$(ticket_of "$META_LINE")"
   fi
-else
-  PLAN_TICKET="$(ticket_of "$(cat "$PLAN_PATH" 2>/dev/null)")"
-  [[ -n "$PLAN_TICKET" ]] && log "ticket guessed from plan body: $PLAN_TICKET (add a 'Ticket:' line near the top to be sure)"
 fi
 
 # --- 3a. Resolve TARGET (what we review against) ----------------------------
-# Priority: A) explicit --branch  B) the plan's ticket  C) pre-implementation base.
+# Priority: A) --ref  B) --branch  C) the plan's ticket → unique branch
+#           D) --pre-implementation / Ticket:none → base ref.
+# When target identity is weak (no explicit ref/branch and the ticket maps to no
+# unique branch), the script FAILS CLOSED with a candidate list instead of
+# silently reviewing the base ref or an ambient HEAD.
 TARGET_REF="" ; TARGET_OID="" ; TARGET_DESC=""
-if [[ -n "$REQ_BRANCH" ]]; then
+# Reusable candidate list for fail-closed messages: worktrees + ticket-matching refs.
+candidates() {
+  printf 'worktrees:\n'; git worktree list 2>/dev/null | sed 's/^/  /'
+  if [[ -n "$PLAN_TICKET" ]]; then
+    printf 'refs carrying %s:\n' "$PLAN_TICKET"
+    { git for-each-ref --format='%(refname:short)' refs/remotes/origin refs/heads 2>/dev/null \
+        | grep -E "(^|[^A-Z0-9])$PLAN_TICKET([^0-9]|$)" | sed 's/^/  /'; } || true
+  fi
+}
+if [[ -n "$REQ_REF" ]]; then
+  # Mode A — explicit commit-ish: SHA, tag, branch, origin/pr/* head, detached OID.
+  TARGET_OID="$(resolve_oid "$REQ_REF")"
+  [[ -n "$TARGET_OID" ]] || die "requested --ref '$REQ_REF' does not resolve to a commit in $REPO_ROOT"
+  # Best-effort human-friendly name; falls back to the short OID.
+  TARGET_REF="$REQ_REF"
+  TARGET_DESC="explicit --ref $REQ_REF"
+elif [[ -n "$REQ_BRANCH" ]]; then
   # Mode A — explicit branch. Accept both a bare head name (feat/ABC-123) and an
   # origin-prefixed name (origin/feat/ABC-123), since users copy the latter from
   # `git` output and from this script's own ambiguity error.
@@ -184,6 +231,11 @@ if [[ -n "$REQ_BRANCH" ]]; then
   done
   [[ -n "$TARGET_OID" ]] || die "requested branch '$REQ_BRANCH' not found locally or on origin"
   TARGET_DESC="explicit --branch $TARGET_REF"
+elif [[ "$PRE_IMPL" -eq 1 ]]; then
+  # Explicit user intent: review against the base ref regardless of any ticket
+  # branch. (Outranks ticket resolution, but not an explicit --ref/--branch.)
+  TARGET_REF="$BASE_REF"; TARGET_OID="$(resolve_oid "$BASE_REF")"
+  TARGET_DESC="--pre-implementation → base ref ${BASE_REF:-<none>}"
 elif [[ -n "$PLAN_TICKET" ]]; then
   # Mode B — the unique branch carrying the plan's ticket key (exact equality).
   # bash 3.2-safe (macOS stock): no mapfile, no associative arrays.
@@ -213,27 +265,38 @@ elif [[ -n "$PLAN_TICKET" ]]; then
     # branch win over its origin mirror.
   done < <({ git for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null; \
              git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null; })
+  # Mode B depends on freshly-fetched remote-tracking refs. A failed fetch could
+  # hide a just-pushed branch or leave a stale OID — fail closed unless opted out.
+  if [[ "$HAS_ORIGIN" -eq 1 && "$FETCH_OK" -eq 0 && -z "${CODEX_CHECK_ALLOW_STALE:-}" ]]; then
+    die "git fetch failed and the target is resolved from the plan's ticket ($PLAN_TICKET) — refs may be stale. Pass --ref/--branch, or set CODEX_CHECK_ALLOW_STALE=1 to accept stale refs."
+  fi
   if   [[ "${#_uniq[@]}" -eq 1 ]]; then
     TARGET_REF="${_uniq[0]}"; TARGET_OID="$(resolve_oid "$TARGET_REF")"
     TARGET_DESC="branch for $PLAN_TICKET: $TARGET_REF"
   elif [[ "${#_uniq[@]}" -gt 1 ]]; then
-    die "ambiguous: multiple branches carry $PLAN_TICKET (${_uniq[*]}) — pass --branch to choose"
+    die "ambiguous: multiple branches carry $PLAN_TICKET (${_uniq[*]}) — pass --ref or --branch to choose"
   else
-    TARGET_REF="$BASE_REF"; TARGET_OID="$(resolve_oid "$BASE_REF")"
-    TARGET_DESC="no branch for $PLAN_TICKET → pre-implementation against ${BASE_REF:-<none>}"
+    die "no branch carries the plan's ticket $PLAN_TICKET, and no --ref/--branch was given.
+Refusing to silently review the base ref. Choose one:
+  - pass --ref <rev> or --branch <name> for the branch to review, or
+  - pass --pre-implementation to review the plan against ${BASE_REF:-<base>} on purpose.
+$(candidates)"
   fi
-else
-  # Mode C — explicit Ticket:none, or no ticket at all → pre-implementation.
+elif [[ "$PLAN_TICKET_EXPLICIT" -eq 1 ]]; then
+  # Mode D — plan explicitly declares 'Ticket: none' → pre-implementation base.
   TARGET_REF="$BASE_REF"; TARGET_OID="$(resolve_oid "$BASE_REF")"
-  if [[ "$PLAN_TICKET_EXPLICIT" -eq 1 ]]; then
-    TARGET_DESC="plan has 'Ticket: none' → pre-implementation against ${BASE_REF:-<none>}"
-  else
-    TARGET_DESC="no ticket in plan → pre-implementation against ${BASE_REF:-<none>}"
-  fi
+  TARGET_DESC="plan has 'Ticket: none' → pre-implementation against ${BASE_REF:-<none>}"
+else
+  die "the plan has no 'Ticket:' line and no --ref/--branch was given, so the review target is undefined.
+Refusing to guess. Choose one:
+  - add a 'Ticket: ABC-123' (or 'Ticket: none') line near the top of the plan, or
+  - pass --ref <rev> / --branch <name> for the branch to review, or
+  - pass --pre-implementation to review the plan against ${BASE_REF:-<base>} on purpose.
+$(candidates)"
 fi
-# Last resort: nothing resolved (e.g. empty repo with no base) → current HEAD.
-[[ -z "$TARGET_OID" ]] && { TARGET_OID="$(resolve_oid HEAD)"; TARGET_DESC="${TARGET_DESC:-fallback} (HEAD)"; }
-[[ -n "$TARGET_OID" ]] || die "could not resolve any commit to review against"
+# Safety net: if a chosen mode still produced no OID (e.g. base ref missing in an
+# empty repo) we cannot proceed — do NOT silently fall back to ambient HEAD.
+[[ -n "$TARGET_OID" ]] || die "could not resolve a commit to review against (target: ${TARGET_DESC:-none}) — pass --ref explicitly"
 log "target: $TARGET_DESC"
 log "plan ticket: ${PLAN_TICKET:-<none>} | current branch: ${CURRENT_BRANCH:-<detached>}"
 
@@ -259,6 +322,23 @@ mkdir -p "$WT/.codex-check"
 cp "$PLAN_PATH" "$WT/.codex-check/PLAN.md"
 REVIEW_IN_WT="$WT/CODEX_REVIEW.md"
 log "worktree: $WT"
+
+# --- 5a. Verify banner: surface the TARGET before the long Codex run --------
+# Codex takes >10 min; a wrong target must be catchable in seconds, not after.
+TARGET_SHORT="$(git rev-parse --short "$TARGET_OID" 2>/dev/null || echo "$TARGET_OID")"
+AHEAD_BEHIND="n/a"
+if [[ -n "$BASE_REF" ]]; then
+  ab="$(git rev-list --left-right --count "$BASE_REF...$TARGET_OID" 2>/dev/null || true)"
+  [[ -n "$ab" ]] && AHEAD_BEHIND="ahead $(printf '%s' "$ab" | awk '{print $2}') / behind $(printf '%s' "$ab" | awk '{print $1}') vs $BASE_REF"
+fi
+SRC_DIRTY="clean"; [[ -n "$(git status --porcelain 2>/dev/null)" ]] && SRC_DIRTY="DIRTY (uncommitted changes in $REPO_ROOT are NOT reviewed — only the committed target)"
+log "──────────────────────────────────────────────"
+log "REVIEWING  target : ${TARGET_DESC}"
+log "REVIEWING  ref/oid: ${TARGET_REF:-<detached>} @ ${TARGET_SHORT}"
+log "REVIEWING  vs base: ${AHEAD_BEHIND}"
+log "REVIEWING  plan   : ${PLAN_REL} (ticket: ${PLAN_TICKET:-<none>})"
+log "REVIEWING  source : ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
+log "──────────────────────────────────────────────"
 
 # --- 6. Build the review prompt --------------------------------------------
 # Diff base: the resolved base ref; else the parent of the target commit; else
@@ -359,8 +439,9 @@ REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
   echo
   echo "- Target: ${TARGET_DESC}"
   echo "- Target ref: ${TARGET_REF:-<detached>} (${TARGET_OID})"
+  echo "- Target vs base: ${AHEAD_BEHIND}"
   echo "- Plan ticket: ${PLAN_TICKET:-<none>}"
-  echo "- Current branch: ${CURRENT_BRANCH:-<detached>}"
+  echo "- Source: ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
   echo "- Diff base: ${DIFF_BASE:-<none>}"
   echo "- Plan: $PLAN_REL"
   echo "- Model: Codex (xhigh, web_search), sandbox=workspace-write"
