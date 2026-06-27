@@ -65,3 +65,24 @@ load helper
   [ "$status" -eq 0 ]
   [ "$(codex_oid)" = "$sha" ]
 }
+
+@test "F9: a line-1 h2 heading still ends the metadata region (body ticket ignored)" {
+  repo="$(make_repo)"
+  git -C "$repo" branch feat/AAA-9-target
+  # First line is an h2 (no title, no metadata Ticket). Body ticket must NOT bind.
+  printf '## Plan\n\nTicket: AAA-9 in prose\n' > "$repo/plan.md"
+  cd "$repo"
+  run bash "$RUN" plan.md
+  [ "$status" -ne 0 ]   # fail closed — body Ticket must not resolve a target
+}
+
+@test "F9: a leading YAML front-matter block is still allowed (Ticket inside binds)" {
+  repo="$(make_repo)"
+  git -C "$repo" branch feat/AAA-3-fm
+  printf -- '---\nTicket: AAA-3\n---\n\n## Plan\nx\n' > "$repo/plan.md"
+  want="$(git -C "$repo" rev-parse feat/AAA-3-fm)"
+  cd "$repo"
+  run bash "$RUN" plan.md
+  [ "$status" -eq 0 ]
+  [ "$(codex_oid)" = "$want" ]
+}

@@ -178,7 +178,19 @@ CURRENT_TICKET="$(ticket_of "$CURRENT_BRANCH")"
 # If there is no metadata `Ticket:` line, the target must come from --ref/--branch
 # or --pre-implementation; otherwise the script fails closed below (Mode C).
 PLAN_TICKET=""; PLAN_TICKET_EXPLICIT=0
-META_REGION="$(awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}' "$PLAN_PATH" 2>/dev/null || true)"
+# Metadata region = the file head up to the first Markdown heading (any level),
+# bounded to 40 lines. A leading YAML front-matter block (delimited by --- on
+# line 1 and a closing ---) is kept as metadata. We do NOT exempt line 1 from
+# the heading fence: a line-1 `## ` is a section, not metadata (else a body
+# Ticket: could leak in and hijack the target).
+META_REGION="$(awk '
+  NR==1 && $0=="---" { infm=1; print; next }
+  infm && $0=="---" { infm=0; print; next }
+  infm { print; next }
+  /^#+[[:space:]]/ { exit }
+  { print }
+  NR>=40 { exit }
+' "$PLAN_PATH" 2>/dev/null || true)"
 META_LINE="$(printf '%s\n' "$META_REGION" | grep -iE '^[[:space:]]*Ticket:[[:space:]]*' | head -n1 || true)"
 if [[ -n "$META_LINE" ]]; then
   PLAN_TICKET_EXPLICIT=1
