@@ -355,11 +355,30 @@ if [[ -n "$BASE_REF" ]]; then
   fi
 fi
 SRC_DIRTY="clean"; [[ -n "$(git status --porcelain 2>/dev/null)" ]] && SRC_DIRTY="DIRTY (uncommitted changes in $REPO_ROOT are NOT reviewed — only the committed target)"
+
+# --- F7: plan/commit skew disclosure (diagnostic only) ----------------------
+# Order matters: a symlink, an out-of-repo path, or a path untracked AT THE
+# TARGET COMMIT must NOT be byte-compared (git show / cmp would mislead).
+# "tracked" means tracked AT TARGET_OID, not merely in the working tree.
+if [[ -L "$PLAN_PATH" ]]; then
+  PLAN_STATUS="symlink (skew not checked)"
+elif [[ "$PLAN_REL" == /* ]]; then
+  # PLAN_REL still absolute => not under REPO_ROOT (e.g. a different worktree).
+  PLAN_STATUS="out-of-repo"
+elif ! git cat-file -e "${TARGET_OID}:${PLAN_REL}" 2>/dev/null; then
+  PLAN_STATUS="untracked"   # not present at the target commit
+elif cmp -s <(git show "${TARGET_OID}:${PLAN_REL}" 2>/dev/null) "$PLAN_PATH"; then
+  PLAN_STATUS="matches"
+else
+  PLAN_STATUS="DIFFERS"
+fi
+
 log "──────────────────────────────────────────────"
 log "REVIEWING  target : ${TARGET_DESC}"
 log "REVIEWING  ref/oid: ${TARGET_REF:-<detached>} @ ${TARGET_SHORT}"
 log "REVIEWING  vs base: ${AHEAD_BEHIND}"
 log "REVIEWING  plan   : ${PLAN_REL} (ticket: ${PLAN_TICKET:-<none>})"
+log "REVIEWING  plan st: PLAN STATUS: ${PLAN_STATUS}"
 log "REVIEWING  source : ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
 log "──────────────────────────────────────────────"
 
@@ -392,7 +411,10 @@ fi
 read -r -d '' PROMPT <<EOF || true
 You are an independent reviewer of an implementation plan. The plan is at ./.codex-check/PLAN.md — read it first.
 
-Reviewing against: ${TARGET_DESC} (you are in a detached worktree at that commit — this is expected). Gather context yourself:
+Reviewing against: ${TARGET_DESC} (you are in a detached worktree at that commit — this is expected).
+NOTE: PLAN STATUS = ${PLAN_STATUS}. If "DIFFERS" or "untracked", the plan file in
+this worktree may not match the reviewed commit — call that out.
+Gather context yourself:
 $TICKET_LINE
 $PR_LINE
 $DIFF_LINE
@@ -467,6 +489,7 @@ REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
   echo "- Source: ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
   echo "- Diff base: ${DIFF_BASE:-<none>}"
   echo "- Plan: $PLAN_REL"
+  echo "- PLAN STATUS: ${PLAN_STATUS}"
   echo "- Model: Codex (xhigh, web_search), sandbox=workspace-write"
   echo
   echo "---"
