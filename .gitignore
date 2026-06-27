@@ -1,0 +1,10 @@
+# Codex-check writes reviews next to plans; never commit generated reviews.
+*.codex-review.md
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# Codex/Claude runtime artifacts (should never be in this repo, but be safe)
+codex-stdout.log
+codex-stderr.log

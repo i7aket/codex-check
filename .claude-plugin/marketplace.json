@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace-manifest.json",
+  "name": "codex-check",
+  "description": "A Claude Code plugin that sends your implementation plan to the local Codex CLI for an independent review.",
+  "owner": {
+    "name": "i7aket",
+    "url": "https://github.com/i7aket"
+  },
+  "plugins": [
+    {
+      "name": "codex-check",
+      "source": "./codex-check",
+      "description": "Independent Codex review of your implementation plan (branch + ticket + PR), in an isolated git worktree.",
+      "version": "1.0.0",
+      "license": "MIT",
+      "keywords": ["codex", "code-review", "plan-review"]
+    }
+  ]
+}
