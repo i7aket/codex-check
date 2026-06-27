@@ -21,8 +21,16 @@ This spec was then reviewed pre-implementation by an independent adversarial pas
 pinned to `TARGET_OID` with a filter-safe byte compare; F8 adds a command.md
 exit-code contract and a fence-safe `tail -n1` parse; CI gains five branch cases
 and a blocking shellcheck; QW5's repo-name "drift" is flagged verify-first
-(likely a no-op). (A Codex `xhigh` review of this spec is pending — the Codex
-workspace was out of credits at authoring time; rerun when refilled.)
+(likely a no-op).
+
+A second independent review by **Codex `xhigh`** then ran live shell/git fixtures
+and confirmed/extended the above: it **proved QW3's naive shared trap is unsafe**
+(a `SIGTERM`'d run resumes and exits 0 — fixed here with a separate signal
+handler exiting `128+signal`), confirmed QW2's field order (`rev-list
+--left-right` → `behind  ahead`), confirmed the F7 CRLF normalization and flagged
+the F7 **symlink** edge (handled as `symlink (skew not checked)`), and confirmed
+QW5's repo identity is already consistent (drift = no-op). Both reviews are folded
+in.
 
 ## Non-goals (explicitly rejected, for the record)
 
@@ -89,9 +97,32 @@ to get right — a bats banner assertion covers it.
 
 `trap cleanup EXIT` does **not** fire on `SIGTERM`/`SIGHUP`, so a cancelled
 background run leaks a worktree every time — material in a ~40-worktree repo with
-concurrent sessions. Change to `trap cleanup EXIT INT TERM HUP`. `cleanup()` is
-already idempotent and `-d`-guarded, so multi-signal re-entry is safe. (Do NOT
-add the rejected startup age-based sweep.)
+concurrent sessions.
+
+**CORRECTION (Codex review, proven by a live signal fixture):** the naive
+`trap cleanup EXIT INT TERM HUP` is **NOT safe**. A signal trap that just runs
+`cleanup` does not terminate the script — bash runs the handler and then
+*resumes* execution, so a `SIGTERM`'d run continues past the interrupted point
+and exits `0`. The fixture showed `rc=0, log=cleanup|after|cleanup` — i.e. the
+cancelled run looked successful and `codex exec` would have been launched anyway.
+`cleanup()`'s idempotency is real (double-fire is harmless) but irrelevant to
+this bug.
+
+Correct form: keep the `EXIT` trap for normal/`die` paths, and add a SEPARATE
+signal handler that cleans up and exits with `128+signal` so the script actually
+aborts:
+
+```sh
+trap cleanup EXIT
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 130' INT
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 143' TERM
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 129' HUP
+```
+
+(Clearing the `EXIT` trap inside the signal handler avoids a redundant — though
+harmless — second cleanup.) The bats SIGTERM case must assert BOTH no leaked
+worktree AND a non-zero exit (not 0). (Do NOT add the rejected startup age-based
+sweep.)
 
 ## QW4 — Real error on worktree-add failure (run.sh ~L320)
 
@@ -152,8 +183,15 @@ falsely read "matches".
    (NB: `git show` outputs smudged content; for plan skew this human-readable
    compare is sufficient. A filter-faithful alternative is
    `git hash-object --path "$PLAN_REL" -- "$PLAN_PATH"` vs
-   `git rev-parse "${TARGET_OID}:${PLAN_REL}"` — only adopt it if a real
-   gitattributes false-DIFFERS shows up.)
+   `git rev-parse "${TARGET_OID}:${PLAN_REL}"` — Codex verified this normalizes
+   CRLF correctly (`hash_equal=yes` under `*.md eol=lf` with a CRLF working
+   copy), so adopt it if a real gitattributes false-DIFFERS shows up.)
+
+**Known limitation (Codex review):** if the plan path is a **symlink**,
+`git show "${TARGET_OID}:${PLAN_REL}"` returns the symlink *target path*, not the
+linked file's content, so the compare is meaningless. This is rare for a plan
+file; treat it as out-of-scope — if `PLAN_PATH` is a symlink, emit
+`PLAN STATUS: symlink (skew not checked)` and do not compare.
 
 Emit the single `PLAN STATUS:` line into (a) the REVIEWING banner, (b) the
 report header block, and (c) the Codex prompt. Diagnostic only — it never
@@ -247,6 +285,11 @@ two steps):
   `CODEX_CHECK_ALLOW_STALE=1` it proceeds.
 - The divergent local-vs-origin **note** path fires when a local branch and its
   origin mirror differ (the fail-closed disclosure promise).
+- **QW3 signal handling (Codex)**: a `SIGTERM`'d run exits **non-zero** (not 0)
+  AND leaves no leaked worktree — pins that the signal handler actually aborts
+  rather than resuming. This is the case the naive shared-EXIT-trap fails.
+- **F7 symlink**: a symlinked plan reports `symlink (skew not checked)`, never a
+  bogus `matches`/`DIFFERS`.
 
 Test helpers must stay bash-3.2-safe even though CI runs on Ubuntu, so the suite
 can also be run locally on stock macOS. **CI runs bash 5, so Ubuntu bats cannot
