@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Test stub for `codex exec`. Records the worktree it was pointed at (-C) and the
+# HEAD OID there, writes a canned report to the -o file. Honors CODEX_STUB_REPORT
+# (path to a file whose contents become the report body) and CODEX_STUB_RC.
+set -euo pipefail
+wt=""; out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -C) shift; wt="$1" ;;
+    -o) shift; out="$1" ;;
+  esac
+  shift || true
+done
+oid="$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
+echo "codex-invoked oid=$oid" >> "${CODEX_LOG:-/dev/null}"
+if [[ -n "$out" ]]; then
+  if [[ -n "${CODEX_STUB_REPORT:-}" && -f "${CODEX_STUB_REPORT}" ]]; then
+    cat "${CODEX_STUB_REPORT}" > "$out"
+  else
+    printf 'STUB-REPORT oid=%s\n' "$oid" > "$out"
+  fi
+fi
+exit "${CODEX_STUB_RC:-0}"

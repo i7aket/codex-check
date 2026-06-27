@@ -142,7 +142,6 @@ if [[ -z "$BASE_REF" ]]; then
     if git rev-parse --verify --quiet "$c" >/dev/null 2>&1; then BASE_REF="$c"; break; fi
   done
 fi
-BASE_BRANCH="${BASE_REF#origin/}"   # bare name for fetch (may be empty)
 log "base ref: ${BASE_REF:-<none>}"
 
 # --- 2a. Freshen ALL remote-tracking refs BEFORE picking a target ----------
