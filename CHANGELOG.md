@@ -4,6 +4,41 @@ All notable changes to this plugin are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-06-27
+
+Hardening of the v1.1.0 target resolution after two independent audits (a
+multi-agent adversarial review and a Codex `xhigh` review) found that v1.1.0
+could still *silently* review a wrong or empty target when target identity was
+weak. The script now **fails closed** instead of guessing.
+
+### Added
+- `--ref <rev>` / `CODEX_CHECK_REF`: review against any commit-ish — a SHA, tag,
+  branch, `origin/pr/*`, or detached PR head — resolved to an OID. Highest
+  priority; the safest selector in a many-worktree repo.
+- `--pre-implementation`: explicitly review the plan against the base ref with no
+  target branch (previously this happened silently).
+- A `REVIEWING …` banner (first stderr lines + report header): target ref/OID,
+  ahead/behind vs the base ref, and the source worktree + its dirty state — so a
+  wrong target is catchable in seconds, not after a 10-minute Codex run.
+- `CODEX_CHECK_ALLOW_STALE=1` to proceed with ticket-based resolution when
+  `git fetch` failed (otherwise that is now fatal — a stale ref could mis-target).
+
+### Changed
+- **Fail-closed targeting.** No `Ticket:` line and no `--ref`/`--branch` → abort
+  with a candidate list (was: guess the ticket from body prose). A ticket that
+  maps to no branch → abort unless `--pre-implementation` (was: silently review
+  the base ref). The script never silently falls back to the ambient HEAD.
+- Body-wide ticket guessing is no longer used to choose the target (a stray key
+  in prose could mis-target). Only a metadata `Ticket:` line selects the target.
+- Inherited `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` / `GIT_INDEX_FILE` /
+  `GIT_NAMESPACE` are unset before the first git call, so a leaked env can't
+  redirect repository discovery.
+- A relative plan path is resolved against the caller's original CWD (before the
+  internal `cd` to the repo root), not against the repo root.
+- `command.md` now instructs the assistant to resolve the target explicitly
+  (plan ticket + `git worktree list`) and pass `--ref`/`--branch`, stopping on
+  ambiguity; a bare no-target invocation is no longer presented as a normal path.
+
 ## [1.1.0] — 2026-06-27
 
 ### Changed
