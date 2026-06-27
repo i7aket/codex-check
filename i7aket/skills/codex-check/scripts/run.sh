@@ -142,7 +142,6 @@ if [[ -z "$BASE_REF" ]]; then
     if git rev-parse --verify --quiet "$c" >/dev/null 2>&1; then BASE_REF="$c"; break; fi
   done
 fi
-BASE_BRANCH="${BASE_REF#origin/}"   # bare name for fetch (may be empty)
 log "base ref: ${BASE_REF:-<none>}"
 
 # --- 2a. Freshen ALL remote-tracking refs BEFORE picking a target ----------
@@ -179,7 +178,19 @@ CURRENT_TICKET="$(ticket_of "$CURRENT_BRANCH")"
 # If there is no metadata `Ticket:` line, the target must come from --ref/--branch
 # or --pre-implementation; otherwise the script fails closed below (Mode C).
 PLAN_TICKET=""; PLAN_TICKET_EXPLICIT=0
-META_REGION="$(awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}' "$PLAN_PATH" 2>/dev/null || true)"
+# Metadata region = the file head up to the first Markdown heading (any level),
+# bounded to 40 lines. A leading YAML front-matter block (delimited by --- on
+# line 1 and a closing ---) is kept as metadata. We do NOT exempt line 1 from
+# the heading fence: a line-1 `## ` is a section, not metadata (else a body
+# Ticket: could leak in and hijack the target).
+META_REGION="$(awk '
+  NR==1 && $0=="---" { infm=1; print; next }
+  infm && $0=="---" { infm=0; print; next }
+  infm { print; next }
+  /^#+[[:space:]]/ { exit }
+  { print }
+  NR>=40 { exit }
+' "$PLAN_PATH" 2>/dev/null || true)"
 META_LINE="$(printf '%s\n' "$META_REGION" | grep -iE '^[[:space:]]*Ticket:[[:space:]]*' | head -n1 || true)"
 if [[ -n "$META_LINE" ]]; then
   PLAN_TICKET_EXPLICIT=1
@@ -317,7 +328,14 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-git worktree add --detach "$WT" "$TARGET_OID" >/dev/null 2>&1 || die "git worktree add failed"
+# A signal trap that only runs cleanup does NOT stop the script — bash resumes
+# after the handler, so a SIGTERM'd run would continue and exit 0 (verified).
+# These handlers clean up and exit with 128+signal so the run actually aborts.
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 130' INT
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 143' TERM
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 129' HUP
+_wt_err="$(git worktree add --detach "$WT" "$TARGET_OID" 2>&1 >/dev/null)" \
+  || die "git worktree add failed: ${_wt_err}"
 mkdir -p "$WT/.codex-check"
 cp "$PLAN_PATH" "$WT/.codex-check/PLAN.md"
 REVIEW_IN_WT="$WT/CODEX_REVIEW.md"
@@ -329,14 +347,38 @@ TARGET_SHORT="$(git rev-parse --short "$TARGET_OID" 2>/dev/null || echo "$TARGET
 AHEAD_BEHIND="n/a"
 if [[ -n "$BASE_REF" ]]; then
   ab="$(git rev-list --left-right --count "$BASE_REF...$TARGET_OID" 2>/dev/null || true)"
-  [[ -n "$ab" ]] && AHEAD_BEHIND="ahead $(printf '%s' "$ab" | awk '{print $2}') / behind $(printf '%s' "$ab" | awk '{print $1}') vs $BASE_REF"
+  if [[ -n "$ab" ]]; then
+    # rev-list --left-right --count BASE...TARGET prints "<behind>\t<ahead>"
+    # (left = base-only = behind; right = target-only = ahead).
+    read -r _behind _ahead <<<"$ab"
+    AHEAD_BEHIND="ahead $_ahead / behind $_behind vs $BASE_REF"
+  fi
 fi
 SRC_DIRTY="clean"; [[ -n "$(git status --porcelain 2>/dev/null)" ]] && SRC_DIRTY="DIRTY (uncommitted changes in $REPO_ROOT are NOT reviewed — only the committed target)"
+
+# --- F7: plan/commit skew disclosure (diagnostic only) ----------------------
+# Order matters: a symlink, an out-of-repo path, or a path untracked AT THE
+# TARGET COMMIT must NOT be byte-compared (git show / cmp would mislead).
+# "tracked" means tracked AT TARGET_OID, not merely in the working tree.
+if [[ -L "$PLAN_PATH" ]]; then
+  PLAN_STATUS="symlink (skew not checked)"
+elif [[ "$PLAN_REL" == /* ]]; then
+  # PLAN_REL still absolute => not under REPO_ROOT (e.g. a different worktree).
+  PLAN_STATUS="out-of-repo"
+elif ! git cat-file -e "${TARGET_OID}:${PLAN_REL}" 2>/dev/null; then
+  PLAN_STATUS="untracked"   # not present at the target commit
+elif cmp -s <(git show "${TARGET_OID}:${PLAN_REL}" 2>/dev/null) "$PLAN_PATH"; then
+  PLAN_STATUS="matches"
+else
+  PLAN_STATUS="DIFFERS"
+fi
+
 log "──────────────────────────────────────────────"
 log "REVIEWING  target : ${TARGET_DESC}"
 log "REVIEWING  ref/oid: ${TARGET_REF:-<detached>} @ ${TARGET_SHORT}"
 log "REVIEWING  vs base: ${AHEAD_BEHIND}"
 log "REVIEWING  plan   : ${PLAN_REL} (ticket: ${PLAN_TICKET:-<none>})"
+log "REVIEWING  plan st: PLAN STATUS: ${PLAN_STATUS}"
 log "REVIEWING  source : ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
 log "──────────────────────────────────────────────"
 
@@ -369,7 +411,10 @@ fi
 read -r -d '' PROMPT <<EOF || true
 You are an independent reviewer of an implementation plan. The plan is at ./.codex-check/PLAN.md — read it first.
 
-Reviewing against: ${TARGET_DESC} (you are in a detached worktree at that commit — this is expected). Gather context yourself:
+Reviewing against: ${TARGET_DESC} (you are in a detached worktree at that commit — this is expected).
+NOTE: PLAN STATUS = ${PLAN_STATUS}. If "DIFFERS" or "untracked", the plan file in
+this worktree may not match the reviewed commit — call that out.
+Gather context yourself:
 $TICKET_LINE
 $PR_LINE
 $DIFF_LINE
@@ -388,6 +433,12 @@ NOTES: numbered list (if none, say so).
 BEST PRACTICES: with links.
 BETTER APPROACHES: if any.
 SUMMARY: 2-3 sentences.
+
+As the LAST line of your answer, with nothing after it, output verbatim exactly one of:
+GATE=READY
+GATE=REVISE
+GATE=REWORK
+(ASCII only, regardless of the language of the review above.)
 EOF
 
 # --- 7. Run Codex -----------------------------------------------------------
@@ -444,6 +495,7 @@ REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
   echo "- Source: ${REPO_ROOT} on ${CURRENT_BRANCH:-<detached>} — ${SRC_DIRTY}"
   echo "- Diff base: ${DIFF_BASE:-<none>}"
   echo "- Plan: $PLAN_REL"
+  echo "- PLAN STATUS: ${PLAN_STATUS}"
   echo "- Model: Codex (xhigh, web_search), sandbox=workspace-write"
   echo
   echo "---"
@@ -452,3 +504,19 @@ REVIEW_REL="${REVIEW_PATH#"$REPO_ROOT"/}"
 } > "$REVIEW_PATH"
 log "review written: $REVIEW_REL"
 printf '%s\n' "$REVIEW_PATH"   # LAST line = the absolute review path (the command parses this to read the file)
+
+# --- F8: opt-in severity gating (fail-closed) -------------------------------
+# Only active when CODEX_CHECK_GATE is set. Parse a stable ASCII token from the
+# report (NOT the free-text VERDICT, which may be non-English). Report path was
+# already printed above, preserving the "last stdout line = report path" contract.
+if [[ -n "${CODEX_CHECK_GATE:-}" ]]; then
+  # `|| true`: under `set -euo pipefail` a no-match grep (rc 1) would otherwise
+  # abort the script before the fail-closed `*)` case below could run.
+  _gate="$(grep -E '^GATE=(READY|REVISE|REWORK)$' "$REVIEW_PATH" 2>/dev/null | tail -n1 || true)"
+  case "$_gate" in
+    GATE=READY)  exit 0 ;;
+    GATE=REVISE) exit 2 ;;
+    GATE=REWORK) exit 3 ;;
+    *) log "gate: no GATE= token found in report — failing closed"; exit 2 ;;
+  esac
+fi

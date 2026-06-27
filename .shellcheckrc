@@ -1,0 +1,13 @@
+# codex-check shellcheck config. shellcheck is a BLOCKING CI gate; these disables
+# document deliberate, load-bearing bash 3.2-safe idioms — not sloppiness.
+
+# SC2206: intentional word-splitting of the semver string into an array in the
+# version comparator (numeric components only; safe).
+disable=SC2206
+# SC2034: some vars are assigned for documentation/report headers and read only
+# via indirect/heredoc expansion; case-by-case false positives.
+disable=SC2034
+# SC2015 (info): `A && B || C` in set_plan() is intentional — B's last command
+# (PLAN_SET=1) always returns 0, so C (die) only fires when A is false. The
+# A-and-B-then-C pattern is correct here, not the foot-gun SC2015 warns about.
+disable=SC2015

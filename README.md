@@ -34,12 +34,30 @@ Nothing is project-specific — it works in any git repo.
 
 ## Install
 
+### Identity reference
+
+| Thing             | Value                          |
+|-------------------|--------------------------------|
+| GitHub repo       | `i7aket/tools`                 |
+| Marketplace name  | `tools`                        |
+| Plugin name       | `i7aket`                       |
+| Command           | `/i7aket:codex-check`          |
+| Install path      | `~/.claude/plugins/cache/tools/i7aket/<version>` |
+
+Install:
 ```text
 /plugin marketplace add i7aket/tools
 /plugin install i7aket@tools
 ```
+Update (run BOTH):
+```text
+/plugin marketplace update tools
+/plugin update i7aket@tools
+```
 
-(The repository `i7aket/tools` is the marketplace `tools`; the plugin inside it is `i7aket`.)
+> **If an update doesn't take:** re-run **both** commands above (the marketplace
+> cache must refresh before the plugin sees a new version). Use only these
+> supported commands.
 
 ## Usage
 
