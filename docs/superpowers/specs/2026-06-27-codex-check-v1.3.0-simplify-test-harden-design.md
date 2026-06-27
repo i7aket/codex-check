@@ -16,6 +16,14 @@ Codex `xhigh`): 34 ideas generated, 22 survived critique, 12 dropped. The
 guiding rule throughout: **keep the honest-disclosure / diagnostic half of each
 idea, drop the speculative self-healing / locking / auto-relocation half.**
 
+This spec was then reviewed pre-implementation by an independent adversarial pass
+(verdict: implement with changes). Its findings are folded in: F7's compare is
+pinned to `TARGET_OID` with a filter-safe byte compare; F8 adds a command.md
+exit-code contract and a fence-safe `tail -n1` parse; CI gains five branch cases
+and a blocking shellcheck; QW5's repo-name "drift" is flagged verify-first
+(likely a no-op). (A Codex `xhigh` review of this spec is pending — the Codex
+workspace was out of credits at authoring time; rerun when refilled.)
+
 ## Non-goals (explicitly rejected, for the record)
 
 Rejected by adversarial critique as bloat or as conflicting with the v1.2.0
@@ -107,10 +115,13 @@ Two parts:
    = `/i7aket:codex-check`, install path = `cache/tools/i7aket/<ver>`), plus a
    short **supported-paths-only** recovery box. Do **not** document the
    `installed_plugins.json` hand-edit (it is a footgun, not a supported path).
-2. **Reconcile the repo-name drift:** run.sh's version-check URL (~L90) hardcodes
-   one repo identity; confirm it matches the marketplace's recorded source and
-   the README install command. Fix whichever is wrong so all three agree. (This
-   pairs with F-version below if the URL is also made overridable.)
+2. **Reconcile the repo-name drift — verify before assuming:** a review found
+   run.sh (version URL ~L90, update hint ~L98) and the README already agree on
+   `i7aket/tools` (marketplace `tools`, plugin `i7aket`). So "drift" may be a
+   **no-op** — the implementer must confirm against the live `marketplace.json`
+   and the recorded marketplace source before changing anything. If all three
+   already agree, this item is docs-only (the identity table) and the URL
+   reconciliation is dropped.
 
 ---
 
@@ -120,14 +131,29 @@ Two parts:
 reviewed at `TARGET_OID`. A plan edited after the target commit is silently
 out of sync.
 
-**Fail-safe check order** (the critical trap: `git diff --quiet -- <path>`
-returns 0 for an untracked or out-of-repo path, which would falsely read as
-"matches"):
+**Fail-safe check order.** Two traps a review caught: (a) `git diff --quiet --
+<path>` returns 0 ("matches") for an untracked/out-of-repo path; (b) "tracked"
+must mean tracked **at `TARGET_OID`**, not in the current working tree — a plan
+added *after* the target commit is tracked-now but absent-at-target and would
+falsely read "matches".
 
-1. Is the plan **tracked AND inside `REPO_ROOT`**? If not →
-   `PLAN STATUS: untracked` or `PLAN STATUS: out-of-repo`. Do not compare.
-2. Only if tracked-in-repo → compare the working-tree blob to the plan's blob at
-   `TARGET_OID`: `PLAN STATUS: matches` or `PLAN STATUS: DIFFERS`.
+1. **In-repo?** The plan is in-repo iff `PLAN_REL` was prefix-stripped (i.e.
+   `PLAN_REL` is relative, not still absolute). If still absolute (e.g. the plan
+   lives in a *different* worktree of the same repo, or outside any repo) →
+   `PLAN STATUS: out-of-repo`. Do not compare.
+2. **Tracked at the target commit?** `git cat-file -e "${TARGET_OID}:${PLAN_REL}"`.
+   If it fails → `PLAN STATUS: untracked` (not present at the target). Do not
+   compare.
+3. **Compare** the plan's working-tree content to its content at `TARGET_OID`.
+   Use a byte compare of the rendered (smudged) content, which sidesteps
+   gitattributes/CRLF blob-id subtleties and is one line:
+   `cmp -s <(git show "${TARGET_OID}:${PLAN_REL}") "$PLAN_PATH"` →
+   `PLAN STATUS: matches` (rc 0) or `PLAN STATUS: DIFFERS` (rc 1).
+   (NB: `git show` outputs smudged content; for plan skew this human-readable
+   compare is sufficient. A filter-faithful alternative is
+   `git hash-object --path "$PLAN_REL" -- "$PLAN_PATH"` vs
+   `git rev-parse "${TARGET_OID}:${PLAN_REL}"` — only adopt it if a real
+   gitattributes false-DIFFERS shows up.)
 
 Emit the single `PLAN STATUS:` line into (a) the REVIEWING banner, (b) the
 report header block, and (c) the Codex prompt. Diagnostic only — it never
@@ -141,9 +167,12 @@ phrased in Russian ("доработать"), so free-text VERDICT parsing is unr
 Use a separate ASCII token the prompt mandates.
 
 **Prompt change (command.md + the heredoc prompt in run.sh):** require Codex to
-emit, as the **last line** of its answer, verbatim one of:
+emit, as the **last line of its answer with nothing after it**, verbatim one of:
 `GATE=READY` | `GATE=REVISE` | `GATE=REWORK` (always ASCII, regardless of the
-review's language).
+review's language). Parse with `grep -E '^GATE=(READY|REVISE|REWORK)$' | tail -n1`
+(last anchored match). A token Codex echoes inside a fenced code block could in
+principle also match; "last line, nothing after it" + `tail -n1` + fail-closed
+bounds this to a low residual risk — document it.
 
 **Script behaviour:**
 
@@ -161,6 +190,14 @@ review's language).
   report (never masks a real codex/auth failure, which still `die`s first).
 
 When `CODEX_CHECK_GATE` is unset, behaviour is unchanged (exit 0 on success).
+
+**command.md exit-code contract (required, caught by review):** the command runs
+the script as a background task and reports the result from the last stdout line.
+Under `CODEX_CHECK_GATE`, a `2`/`3` exit **with a report path printed on stdout**
+is a *successful* REVISE/REWORK verdict, **not** a failure. Only a
+`[codex-check] ERROR: …` message (and no report) is a real failure. Add this to
+command.md's "Report the result" and "Error handling" sections so the calling
+assistant doesn't misreport a good gated review as an error.
 
 ---
 
@@ -200,10 +237,23 @@ two steps):
 - **Gating maps**: stub emitting `GATE=REWORK` → exit 3; `GATE=READY` → exit 0;
   stdout last line is still the report path in all gated cases.
 - **PLAN STATUS**: an untracked plan reports `untracked` (NOT `matches`); a plan
-  edited after the target commit reports `DIFFERS`.
+  edited after the target commit reports `DIFFERS`; a plan absent at TARGET_OID
+  reports `untracked`/`out-of-repo` (NOT `matches`).
+- `--pre-implementation` → reviews the base ref (stub gets base OID).
+- `CODEX_CHECK_REF` env resolves the target; an explicit `--ref` flag overrides
+  the env (precedence).
+- An `origin/`-prefixed `--branch` resolves to the remote branch.
+- Failed-fetch is fatal for Mode B (ticket resolution) → `die`; with
+  `CODEX_CHECK_ALLOW_STALE=1` it proceeds.
+- The divergent local-vs-origin **note** path fires when a local branch and its
+  origin mirror differ (the fail-closed disclosure promise).
 
 Test helpers must stay bash-3.2-safe even though CI runs on Ubuntu, so the suite
-can also be run locally on stock macOS.
+can also be run locally on stock macOS. **CI runs bash 5, so Ubuntu bats cannot
+catch a bash-3.2-only regression** — note in the suite that local macOS bats is
+the real 3.2 gate. **shellcheck is BLOCKING** (the whole point is to pin the
+guarantees); the `.shellcheckrc` disables carry inline rationale and must land in
+the FIRST commit so shellcheck is green before/at the dead-var delete.
 
 ## Versioning
 
