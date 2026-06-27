@@ -316,7 +316,14 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-git worktree add --detach "$WT" "$TARGET_OID" >/dev/null 2>&1 || die "git worktree add failed"
+# A signal trap that only runs cleanup does NOT stop the script — bash resumes
+# after the handler, so a SIGTERM'd run would continue and exit 0 (verified).
+# These handlers clean up and exit with 128+signal so the run actually aborts.
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 130' INT
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 143' TERM
+trap 'cleanup; trap - INT TERM HUP EXIT; exit 129' HUP
+_wt_err="$(git worktree add --detach "$WT" "$TARGET_OID" 2>&1 >/dev/null)" \
+  || die "git worktree add failed: ${_wt_err}"
 mkdir -p "$WT/.codex-check"
 cp "$PLAN_PATH" "$WT/.codex-check/PLAN.md"
 REVIEW_IN_WT="$WT/CODEX_REVIEW.md"
@@ -328,7 +335,12 @@ TARGET_SHORT="$(git rev-parse --short "$TARGET_OID" 2>/dev/null || echo "$TARGET
 AHEAD_BEHIND="n/a"
 if [[ -n "$BASE_REF" ]]; then
   ab="$(git rev-list --left-right --count "$BASE_REF...$TARGET_OID" 2>/dev/null || true)"
-  [[ -n "$ab" ]] && AHEAD_BEHIND="ahead $(printf '%s' "$ab" | awk '{print $2}') / behind $(printf '%s' "$ab" | awk '{print $1}') vs $BASE_REF"
+  if [[ -n "$ab" ]]; then
+    # rev-list --left-right --count BASE...TARGET prints "<behind>\t<ahead>"
+    # (left = base-only = behind; right = target-only = ahead).
+    read -r _behind _ahead <<<"$ab"
+    AHEAD_BEHIND="ahead $_ahead / behind $_behind vs $BASE_REF"
+  fi
 fi
 SRC_DIRTY="clean"; [[ -n "$(git status --porcelain 2>/dev/null)" ]] && SRC_DIRTY="DIRTY (uncommitted changes in $REPO_ROOT are NOT reviewed — only the committed target)"
 log "──────────────────────────────────────────────"
