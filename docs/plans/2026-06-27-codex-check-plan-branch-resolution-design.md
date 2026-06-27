@@ -108,12 +108,22 @@ code that contains the string `401 Unauthorized`, or by an unrelated MCP server 
 401 to the shared stderr.
 
 Fix — make the auth check trustworthy instead of substring-sniffing:
-- **Gate on outcome, not on grepping output.** A non-zero Codex exit code is treated as a
-  failure even if a partial report was written (a truncated report from a crashed run is not
-  a valid review); an empty/missing report is also a failure. Crucially, the *reason* — auth
-  vs. anything else — is decided only after we know it failed, and never from substrings in a
-  successful run's logs. So a successful run that merely quotes `401 Unauthorized` is never
-  misread as an auth failure (that is the actual bug being fixed).
+- **Success is decided by the report, not the exit code or the logs.** `codex exec -o` can
+  write a complete review and then exit non-zero on an unrelated post-run/MCP error; that
+  review is still valid and is kept (discarding it would reintroduce the false-failure this
+  change fixes). Only a missing/empty report is a failure. The *reason* — auth vs anything
+  else — is attributed only after we know it failed, and never from substrings in a
+  successful run's logs, so a review that merely quotes `401 Unauthorized` is never misread
+  as an auth failure.
+
+## Report header is intentionally changing (compatibility note)
+
+The generated `<plan>.codex-review.md` header keys change from `Branch`/`Ticket` to
+`Target`/`Target ref`/`Plan ticket`/`Current branch`/`Diff base`. This is an **intentional**
+break of the "report format unchanged" non-goal: the old keys can no longer express what the
+review actually ran against (a resolved target distinct from the checked-out branch). The
+report is human-facing Markdown with no known machine consumers; the change is recorded here
+and in the CHANGELOG so it is not a silent surprise.
 - If (and only if) it failed, then narrow the auth heuristic to Codex CLI's real auth
   signature — match on stderr lines that are Codex's own error output (e.g. a leading
   `ERROR`/`error:` line containing `token`/`401`), not any occurrence anywhere in the

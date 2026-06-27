@@ -26,9 +26,9 @@ All notable changes to this plugin are documented here. The format is based on
 - False "token revoked" abort. The auth check used to grep the whole Codex stderr for
   `401 Unauthorized` / `token_revoked`, which matched when Codex merely *quoted* such a
   string (e.g. reviewing this very script) or when an unrelated MCP server logged a 401 —
-  killing a successful run. A run that produces a non-empty report is now always a success;
-  auth failure is reported only when Codex actually failed and its own error output looks
-  like an auth problem.
+  killing a successful run. Success is now decided by the report: a non-empty review from
+  `-o` is kept even if Codex then exits non-zero; only a missing/empty report is a failure,
+  and auth is blamed only when Codex's own error output looks like an auth problem.
 - `bash` 3.2 portability (stock macOS): removed `mapfile` / associative arrays.
 
 ## [1.0.1]

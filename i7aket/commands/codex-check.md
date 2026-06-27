@@ -31,7 +31,7 @@ You will be notified. Do not actively poll.
 - In chat, output: the VERDICT, 3-5 top notes, and the path to the review file.
 
 # Error handling
-The script exits with a clear `[codex-check] ERROR: ...` message and cleans up the worktree itself (trap). Possible causes: codex/git missing, plan not found, an ambiguous ticket (two branches carry the key — pass `--branch`), an unknown/missing branch, worktree creation failed, or Codex failed. A run that produced a non-empty report is treated as success regardless of its log contents; the script only reports an auth failure (suggesting `codex login`) when Codex actually failed AND its own error output looks like an auth problem. Show the error message to the user verbatim.
+The script exits with a clear `[codex-check] ERROR: ...` message and cleans up the worktree itself (trap). Possible causes: codex/git missing, plan not found, an ambiguous ticket (two branches carry the key — pass `--branch`), an unknown/missing branch, worktree creation failed, or Codex wrote no report. Success is decided by the report: if `-o` wrote a non-empty review it is kept even if Codex then exits non-zero (a stray post-run/MCP error must not discard a valid review). Only a missing/empty report is a failure, and only then is auth blamed (suggesting `codex login`) — and only when Codex's own error output looks like an auth problem, never because a successful review merely quoted a string like `401 Unauthorized`. Show the error message to the user verbatim.
 
 # Notes
 - Web search in `codex exec` is enabled via `-c web_search='"live"'` (there is NO `--search` flag). The report is captured via `-o/--output-last-message`. These details are already in the script.

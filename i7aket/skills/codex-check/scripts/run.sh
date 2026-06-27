@@ -142,33 +142,48 @@ CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null \
   || true)"
 CURRENT_TICKET="$(ticket_of "$CURRENT_BRANCH")"
 
-# The plan is the source of truth. Prefer an explicit `Ticket:` metadata line;
-# only fall back to a free-text scan (as a logged guess) when no such line exists.
+# The plan is the source of truth. Look for a `Ticket:` line only in the METADATA
+# REGION — the head of the file, up to the first Markdown section heading (`## `)
+# or a YAML front-matter terminator. This stops a `Ticket:` inside body prose or a
+# fenced code block from hijacking the target (which would recreate the very
+# wrong-target bug we're fixing). Only if no metadata line exists do we fall back
+# to a logged free-text guess over the whole file.
 PLAN_TICKET=""; PLAN_TICKET_EXPLICIT=0
-META_LINE="$(grep -iE '^[[:space:]]*Ticket:[[:space:]]*' "$PLAN_PATH" 2>/dev/null | head -n1 || true)"
+META_REGION="$(awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}' "$PLAN_PATH" 2>/dev/null || true)"
+META_LINE="$(printf '%s\n' "$META_REGION" | grep -iE '^[[:space:]]*Ticket:[[:space:]]*' | head -n1 || true)"
 if [[ -n "$META_LINE" ]]; then
   PLAN_TICKET_EXPLICIT=1
-  if printf '%s' "$META_LINE" | grep -qiE 'Ticket:[[:space:]]*none'; then
+  # Match "none" as a whole token (Ticket: none), not as a prefix of e.g. "noneABC".
+  if printf '%s' "$META_LINE" | grep -qiE 'Ticket:[[:space:]]*none([[:space:]]|$)'; then
     PLAN_TICKET=""   # explicit "none" → no ticket-based branch lookup
   else
     PLAN_TICKET="$(ticket_of "$META_LINE")"
   fi
 else
   PLAN_TICKET="$(ticket_of "$(cat "$PLAN_PATH" 2>/dev/null)")"
-  [[ -n "$PLAN_TICKET" ]] && log "ticket guessed from plan body: $PLAN_TICKET (add a 'Ticket:' line to be sure)"
+  [[ -n "$PLAN_TICKET" ]] && log "ticket guessed from plan body: $PLAN_TICKET (add a 'Ticket:' line near the top to be sure)"
 fi
 
 # --- 3a. Resolve TARGET (what we review against) ----------------------------
 # Priority: A) explicit --branch  B) the plan's ticket  C) pre-implementation base.
 TARGET_REF="" ; TARGET_OID="" ; TARGET_DESC=""
 if [[ -n "$REQ_BRANCH" ]]; then
-  # Mode A — explicit branch.
-  git check-ref-format --branch "$REQ_BRANCH" >/dev/null 2>&1 || die "invalid branch name: $REQ_BRANCH"
-  for cand in "refs/heads/$REQ_BRANCH" "refs/remotes/origin/$REQ_BRANCH"; do
-    TARGET_OID="$(resolve_oid "$cand")"; [[ -n "$TARGET_OID" ]] && { TARGET_REF="$REQ_BRANCH"; break; }
+  # Mode A — explicit branch. Accept both a bare head name (feat/ABC-123) and an
+  # origin-prefixed name (origin/feat/ABC-123), since users copy the latter from
+  # `git` output and from this script's own ambiguity error.
+  _bare="${REQ_BRANCH#origin/}"
+  git check-ref-format --branch "$_bare" >/dev/null 2>&1 || die "invalid branch name: $REQ_BRANCH"
+  if [[ "$REQ_BRANCH" == origin/* ]]; then
+    _cands=("refs/remotes/origin/$_bare" "refs/heads/$_bare")   # explicit origin/ → prefer remote
+  else
+    _cands=("refs/heads/$_bare" "refs/remotes/origin/$_bare")
+  fi
+  for cand in "${_cands[@]}"; do
+    TARGET_OID="$(resolve_oid "$cand")"
+    [[ -n "$TARGET_OID" ]] && { TARGET_REF="${cand#refs/heads/}"; TARGET_REF="${TARGET_REF#refs/remotes/}"; break; }
   done
   [[ -n "$TARGET_OID" ]] || die "requested branch '$REQ_BRANCH' not found locally or on origin"
-  TARGET_DESC="explicit --branch $REQ_BRANCH"
+  TARGET_DESC="explicit --branch $TARGET_REF"
 elif [[ -n "$PLAN_TICKET" ]]; then
   # Mode B — the unique branch carrying the plan's ticket key (exact equality).
   # bash 3.2-safe (macOS stock): no mapfile, no associative arrays.
@@ -308,20 +323,24 @@ codex exec \
 CODEX_RC=$?
 set -e
 
-# A run that produced a non-empty report is a success — regardless of what
-# strings appear in its logs. (Reviewing a plan that *quotes* "401 Unauthorized",
-# or an unrelated MCP server logging a 401, must NOT be read as our auth failing.)
-if [[ $CODEX_RC -ne 0 || ! -s "$REVIEW_IN_WT" ]]; then
-  # It genuinely failed. Only THEN decide whether it looks like an auth problem,
-  # and only from Codex's own error lines (a leading ERROR/error: that mentions a
-  # token/auth/401), not from any occurrence anywhere in the transcript.
+# Success is decided by the REPORT, not by the exit code or by grepping logs.
+# `-o` may write a complete report and then Codex exits non-zero on an unrelated
+# post-run/MCP error — that report is still a valid review and must be kept.
+# Likewise a successful run that merely *quotes* "401 Unauthorized" must never be
+# read as our auth failing. So: a non-empty report wins; only an empty/missing
+# report is a failure, and only then do we attribute a cause.
+if [[ ! -s "$REVIEW_IN_WT" ]]; then
+  # Genuinely no report. Decide whether it looks like an auth problem, and only
+  # from Codex's own error lines (a leading ERROR/error: mentioning token/auth/401),
+  # not from any occurrence anywhere in the transcript.
+  log "codex stderr tail:"; tail -n 15 "$WT/codex-stderr.log" >&2 || true
   if grep -qiE '^[[:space:]]*(error[: ]).*(token_revoked|refresh_token_invalidated|unauthorized|401|re-?authenticate|codex login)' "$WT/codex-stderr.log" 2>/dev/null; then
-    log "codex stderr tail:"; tail -n 15 "$WT/codex-stderr.log" >&2 || true
     die "Codex auth failed — run: codex login, then retry"
   fi
-  log "codex stderr tail:"; tail -n 15 "$WT/codex-stderr.log" >&2 || true
-  die "codex exec failed (rc=$CODEX_RC) or empty report — review not written"
+  die "codex exec failed (rc=$CODEX_RC) and wrote no report"
 fi
+# Report exists. Note a non-zero exit but proceed — the review is usable.
+[[ $CODEX_RC -ne 0 ]] && log "note: codex exited non-zero (rc=$CODEX_RC) but a report was written — keeping it"
 
 # --- 8. Copy the report next to the plan -----------------------------------
 # Strip only a real markdown extension from the basename (so e.g. ".features/plan"
