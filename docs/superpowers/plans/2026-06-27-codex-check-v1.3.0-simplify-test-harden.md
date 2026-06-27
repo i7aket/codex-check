@@ -176,8 +176,10 @@ load helper
 @test "metadata-region Ticket binds; a Ticket: only in body prose does not" {
   repo="$(make_repo)"
   git -C "$repo" branch feat/AAA-9-target
-  # No metadata Ticket line; a Ticket: appears only after a heading (body).
-  printf '## Plan\n\nTicket: AAA-9 in prose\n' > "$repo/plan.md"
+  # Normal plan layout: an h1 title on line 1, then a section, then a body Ticket:.
+  # The metadata region ends at the first heading, so the body Ticket: must NOT
+  # bind the target -> fail closed. (The line-1-h2 edge is covered by F9/Task 3b.)
+  printf '# My Plan\n\n## Section\n\nTicket: AAA-9 in prose\n' > "$repo/plan.md"
   cd "$repo"
   run bash "$RUN" plan.md
   [ "$status" -ne 0 ]   # body Ticket must NOT resolve a target -> fail closed
@@ -213,6 +215,10 @@ disable=SC2206
 # SC2034: some vars are assigned for documentation/report headers and read only
 # via indirect/heredoc expansion; case-by-case false positives.
 disable=SC2034
+# SC2015 (info): `A && B || C` in set_plan() is intentional — B's last command
+# (PLAN_SET=1) always returns 0, so C (die) only fires when A is false. The
+# A-and-B-then-C pattern is correct here, not the foot-gun SC2015 warns about.
+disable=SC2015
 ```
 
 - [ ] **Step 8: Run shellcheck — expect it to flag the dead BASE_BRANCH**
@@ -428,6 +434,99 @@ Expected: shellcheck clean, syntax OK, all bats pass (QW3 now aborts non-zero wi
 git add i7aket/skills/codex-check/scripts/run.sh test/quick_wins.bats
 git -c user.name="i7aket" -c user.email="i7aket@users.noreply.github.com" \
   commit -m "fix(run.sh): QW2 one-read ahead/behind; QW3 abort-on-signal trap; QW4 surface worktree-add error"
+```
+
+---
+
+## Task 3b: F9 — metadata-fence ignores a line-1 `## ` heading
+
+**Discovered during Task 1.** The metadata-region fence at `run.sh:182`
+(`awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}'`) exempts line 1 from the
+`## ` boundary (the `NR>1` guard, originally to allow a YAML front-matter or title
+on line 1). Consequence: a plan whose **first line is an h2** (`## Plan`) followed
+by a body `Ticket:` lets that body ticket leak into the metadata region and bind
+the target — the exact wrong-target leak the surrounding comment claims to
+prevent. Verified empirically: `## Plan\n\nTicket: AAA-9` → body ticket extracted.
+Normal layouts (`# Title` h1 line 1, or a `Ticket:` metadata line on top) are
+unaffected. Fix: make the fence stop at the first heading of ANY level
+(`#`/`##`/…) regardless of line number, while still allowing a leading YAML
+front-matter block delimited by `---`.
+
+**Files:**
+- Modify: `i7aket/skills/codex-check/scripts/run.sh:182` (the `META_REGION` awk)
+- Modify: `test/target_resolution.bats` (add the line-1-h2 edge case)
+
+- [ ] **Step 1: Add the failing edge-case test**
+
+Append to `test/target_resolution.bats`:
+```bash
+@test "F9: a line-1 h2 heading still ends the metadata region (body ticket ignored)" {
+  repo="$(make_repo)"
+  git -C "$repo" branch feat/AAA-9-target
+  # First line is an h2 (no title, no metadata Ticket). Body ticket must NOT bind.
+  printf '## Plan\n\nTicket: AAA-9 in prose\n' > "$repo/plan.md"
+  cd "$repo"
+  run bash "$RUN" plan.md
+  [ "$status" -ne 0 ]   # fail closed — body Ticket must not resolve a target
+}
+
+@test "F9: a leading YAML front-matter block is still allowed (Ticket inside binds)" {
+  repo="$(make_repo)"
+  git -C "$repo" branch feat/AAA-3-fm
+  printf -- '---\nTicket: AAA-3\n---\n\n## Plan\nx\n' > "$repo/plan.md"
+  want="$(git -C "$repo" rev-parse feat/AAA-3-fm)"
+  cd "$repo"
+  run bash "$RUN" plan.md
+  [ "$status" -eq 0 ]
+  [ "$(codex_oid)" = "$want" ]
+}
+```
+
+- [ ] **Step 2: Run — expect the line-1-h2 case to FAIL**
+
+Run: `bats test/target_resolution.bats`
+Expected: the F9 line-1-h2 case FAILS (target resolves to the body ticket today).
+
+- [ ] **Step 3: Fix the fence**
+
+In `run.sh`, replace line ~182:
+```sh
+META_REGION="$(awk 'NR>1 && /^## /{exit} {print} NR>=40{exit}' "$PLAN_PATH" 2>/dev/null || true)"
+```
+with a fence that (a) ends at the first heading of any level, regardless of line
+number, and (b) still allows a leading `---`-delimited YAML front-matter block:
+```sh
+# Metadata region = the file head up to the first Markdown heading (any level),
+# bounded to 40 lines. A leading YAML front-matter block (delimited by --- on
+# line 1 and a closing ---) is kept as metadata. We do NOT exempt line 1 from
+# the heading fence: a line-1 `## ` is a section, not metadata (else a body
+# Ticket: could leak in and hijack the target).
+META_REGION="$(awk '
+  NR==1 && $0=="---" { infm=1; print; next }
+  infm && $0=="---" { infm=0; print; next }
+  infm { print; next }
+  /^#+[[:space:]]/ { exit }
+  { print }
+  NR>=40 { exit }
+' "$PLAN_PATH" 2>/dev/null || true)"
+```
+
+- [ ] **Step 4: Run the full target_resolution suite + shellcheck**
+
+Run:
+```bash
+shellcheck -x -s bash i7aket/skills/codex-check/scripts/run.sh
+bash -n i7aket/skills/codex-check/scripts/run.sh
+bats test/target_resolution.bats
+```
+Expected: shellcheck clean, syntax OK, all cases PASS (including both F9 cases and the original metadata/body case).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add i7aket/skills/codex-check/scripts/run.sh test/target_resolution.bats
+git -c user.name="i7aket" -c user.email="i7aket@users.noreply.github.com" \
+  commit -m "fix(run.sh): F9 metadata fence stops at first heading (line-1 h2 no longer leaks body ticket)"
 ```
 
 ---
